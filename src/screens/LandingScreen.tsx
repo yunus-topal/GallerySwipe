@@ -1,6 +1,7 @@
 import * as React from "react";
-import { View, Alert } from "react-native";
-import { Button, Text } from "react-native-paper";
+import { Alert, StyleSheet, View } from "react-native";
+import { Button, Text, useTheme, Surface } from "react-native-paper";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { RootStackParamList } from "../../App";
 import { ensureGalleryPermissions, goToAppSettings } from "../permissions/galleryPermissions";
@@ -9,6 +10,7 @@ type Props = NativeStackScreenProps<RootStackParamList, "Landing">;
 
 export default function LandingScreen({ navigation }: Props) {
   const [loading, setLoading] = React.useState(false);
+  const theme = useTheme();
 
   const onStart = async () => {
     setLoading(true);
@@ -28,7 +30,7 @@ export default function LandingScreen({ navigation }: Props) {
                 { text: "Open Settings", onPress: goToAppSettings },
               ]
         );
-        return; // IMPORTANT: do not navigate
+        return;
       }
 
       navigation.navigate("GallerySwipe");
@@ -38,15 +40,83 @@ export default function LandingScreen({ navigation }: Props) {
   };
 
   return (
-    <View style={{ flex: 1, padding: 24, justifyContent: "center", gap: 12 }}>
-      <Text variant="headlineMedium">Gallery Swipe</Text>
-      <Text variant="bodyMedium">
-        Tap start to grant gallery permissions, then swipe through your recent photos.
-      </Text>
+    <SafeAreaView style={[styles.safe, { backgroundColor: theme.colors.background }]}>
+      <View style={styles.container}>
+        <Surface
+          elevation={1}
+          style={[
+            styles.card,
+            {
+              backgroundColor: theme.colors.surface,
+              borderColor: theme.colors.outline,
+            },
+          ]}
+        >
+          <Text
+            variant="headlineMedium"
+            style={[styles.title, { color: theme.colors.onSurface }]}
+          >
+            Gallery Swipe
+          </Text>
 
-      <Button mode="contained" onPress={onStart} loading={loading} disabled={loading}>
-        Start
-      </Button>
-    </View>
+          <Text
+            variant="bodyMedium"
+            style={[styles.subtitle, { color: theme.colors.onSurfaceVariant }]}
+          >
+            Tap start to grant gallery permissions, then swipe through your recent photos.
+          </Text>
+
+          <Button
+            mode="contained"
+            onPress={onStart}
+            loading={loading}
+            disabled={loading}
+            contentStyle={styles.buttonContent}
+            style={styles.button}
+          >
+            Start
+          </Button>
+
+          <Text
+            variant="labelSmall"
+            style={[styles.footer, { color: theme.colors.onSurfaceVariant }]}
+          >
+            If permission is blocked, we’ll send you to Settings.
+          </Text>
+        </Surface>
+      </View>
+    </SafeAreaView>
   );
 }
+
+const styles = StyleSheet.create({
+  safe: { flex: 1 },
+  container: {
+    flex: 1,
+    padding: 20,
+    justifyContent: "center",
+  },
+  card: {
+    padding: 20,
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    gap: 12,
+  },
+  title: {
+    marginBottom: 4,
+    fontWeight: "700",
+  },
+  subtitle: {
+    lineHeight: 20,
+  },
+  button: {
+    marginTop: 8,
+    borderRadius: 12,
+  },
+  buttonContent: {
+    paddingVertical: 8,
+  },
+  footer: {
+    marginTop: 6,
+  },
+});
