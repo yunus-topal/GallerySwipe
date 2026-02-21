@@ -387,8 +387,8 @@ export default function GallerySwipeScreen({ navigation }: Props) {
       Alert.alert("Invalid number", "Enter a whole number (e.g. 1, 25, 300).", [{ text: "OK" }]);
       return;
     }
-    if (n < 1) {
-      Alert.alert("Out of range", "Minimum is 1.", [{ text: "OK" }]);
+    if (n < 1 || (totalCount !== null && n > totalCount)) {
+      Alert.alert("Out of range", `Enter a number between 1 and ${totalCount ?? "the total photo count"}.`, [{ text: "OK" }]);
       return;
     }
 
