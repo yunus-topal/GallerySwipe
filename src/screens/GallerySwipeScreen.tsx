@@ -8,6 +8,9 @@ import {
   Animated,
   PanResponder,
   Pressable,
+  Alert,
+  Modal,
+  TextInput,
 } from "react-native";
 import { CameraRoll } from "@react-native-camera-roll/camera-roll";
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
@@ -122,6 +125,10 @@ export default function GallerySwipeScreen({ navigation }: Props) {
 
   // Total count (cached or computed)
   const [totalCount, setTotalCount] = React.useState<number | null>(null);
+
+  // Jump UI
+  const [jumpOpen, setJumpOpen] = React.useState(false);
+  const [jumpText, setJumpText] = React.useState("");
 
   const pan = React.useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
 
@@ -265,6 +272,72 @@ export default function GallerySwipeScreen({ navigation }: Props) {
     return unsub;
   }, [navigation]);
 
+  const clearProgress = React.useCallback(async () => {
+    await Promise.all([
+      AsyncStorage.removeItem(KEY_POS),
+      AsyncStorage.removeItem(KEY_QUEUE),
+      AsyncStorage.removeItem(KEY_AFTER),
+    ]);
+  }, []);
+
+  /**
+   * Rebuild queue + cursor such that pos points to `targetPos` (0-based in the full CameraRoll order).
+   * Note: We still filter out items already in our trash set, so the first shown image might be the
+   * next non-trashed photo at/after targetPos.
+   */
+  const rebuildStateAtPos = React.useCallback(
+    async (targetPos: number) => {
+      const trash = await getTrashSet();
+
+      let after: string | undefined = undefined;
+      let consumed = 0; // how many CameraRoll items we've skipped so far
+
+      // Find the page containing targetPos
+      while (true) {
+        const res = await CameraRoll.getPhotos({
+          first: PAGE_SIZE,
+          assetType: "Photos",
+          after,
+        });
+
+        const edges = res.edges ?? [];
+        const pageLen = edges.length;
+
+        // No more photos
+        if (pageLen === 0) {
+          return { pos: Math.max(0, consumed), q: [] as string[], after: null as string | null };
+        }
+
+        // If the target is beyond this page, skip it.
+        if (consumed + pageLen <= targetPos && res.page_info?.has_next_page && res.page_info?.end_cursor) {
+          consumed += pageLen;
+          after = res.page_info.end_cursor;
+          continue;
+        }
+
+        // Target is inside this page (or we're at the end).
+        const startIdx = Math.max(0, targetPos - consumed);
+        const urisInPage = edges
+          .slice(startIdx)
+          .map((e) => e.node.image?.uri)
+          .filter((u): u is string => typeof u === "string" && u.length > 0);
+
+        // Filter out already-trashed in our app
+        let q = urisInPage.filter((u) => !trash.has(u));
+
+        let nextAfter: string | null = res.page_info?.has_next_page ? res.page_info?.end_cursor ?? null : null;
+
+        // Top up queue if needed so the user can immediately keep swiping
+        const refilled = await refillQueueIfNeeded(q, nextAfter);
+        q = refilled.q;
+        nextAfter = refilled.after;
+
+        return { pos: Math.max(0, targetPos), q, after: nextAfter };
+      }
+    },
+    [refillQueueIfNeeded]
+  );
+
 
 
   const currentUri = queue && queue.length > 0 ? queue[0] : null;
@@ -278,6 +351,75 @@ export default function GallerySwipeScreen({ navigation }: Props) {
     },
     [persistProgress]
   );
+
+  const restartFromBeginning = React.useCallback(() => {
+    Alert.alert(
+      "Restart?",
+      "Go back to the beginning and reset the counter?",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Restart",
+          style: "destructive",
+          onPress: async () => {
+            if (busy) return;
+            setBusy(true);
+            try {
+              setJumpOpen(false);
+              setJumpText("");
+              setHistory([]);
+              pan.setValue({ x: 0, y: 0 });
+              await clearProgress();
+              await loadInitial();
+            } finally {
+              setBusy(false);
+            }
+          },
+        },
+      ]
+    );
+  }, [busy, clearProgress, loadInitial, pan]);
+
+  const jumpToNth = React.useCallback(() => {
+    const raw = jumpText.trim();
+    const n = Number(raw);
+    if (!Number.isFinite(n) || !Number.isInteger(n)) {
+      Alert.alert("Invalid number", "Enter a whole number (e.g. 1, 25, 300).", [{ text: "OK" }]);
+      return;
+    }
+    if (n < 1) {
+      Alert.alert("Out of range", "Minimum is 1.", [{ text: "OK" }]);
+      return;
+    }
+
+    Alert.alert(
+      "Jump?",
+      `Jump to image #${n} and continue from there?`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Jump",
+          onPress: async () => {
+            if (busy) return;
+            setBusy(true);
+            try {
+              setJumpOpen(false);
+              setHistory([]);
+              pan.setValue({ x: 0, y: 0 });
+
+              const targetPos = n - 1;
+              const rebuilt = await rebuildStateAtPos(targetPos);
+              await commitState(rebuilt.pos, rebuilt.q, rebuilt.after);
+            } catch (e: any) {
+              Alert.alert("Jump failed", e?.message ?? "Could not jump to that position.");
+            } finally {
+              setBusy(false);
+            }
+          },
+        },
+      ]
+    );
+  }, [busy, commitState, jumpText, pan, rebuildStateAtPos]);
 
   const refillingRef = React.useRef(false);
 
@@ -526,10 +668,38 @@ export default function GallerySwipeScreen({ navigation }: Props) {
           gap: 8,
         }}
       >
-        <RNText style={{ color: "rgba(255,255,255,0.75)" }}>
-          {shownPos1Based} / {totalText}
-          {busy ? " • working…" : ""}
-        </RNText>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <Pressable
+            onPress={restartFromBeginning}
+            disabled={busy}
+            style={{
+              paddingHorizontal: 10,
+              paddingVertical: 6,
+              borderRadius: 10,
+              backgroundColor: busy ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.15)",
+            }}
+          >
+            <RNText style={{ color: "white" }}>Restart</RNText>
+          </Pressable>
+
+          <Pressable
+            onPress={() => setJumpOpen(true)}
+            disabled={busy}
+            style={{
+              paddingHorizontal: 10,
+              paddingVertical: 6,
+              borderRadius: 10,
+              backgroundColor: busy ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.15)",
+            }}
+          >
+            <RNText style={{ color: "white" }}>Jump</RNText>
+          </Pressable>
+
+          <RNText style={{ color: "rgba(255,255,255,0.75)" }}>
+            {shownPos1Based} / {totalText}
+            {busy ? " • working…" : ""}
+          </RNText>
+        </View>
 
         <View style={{ flexDirection: "row", gap: 8 }}>
           <Pressable
@@ -559,6 +729,62 @@ export default function GallerySwipeScreen({ navigation }: Props) {
           </Pressable>
         </View>
       </View>
+
+      {/* Jump modal */}
+      <Modal visible={jumpOpen} transparent animationType="fade" onRequestClose={() => setJumpOpen(false)}>
+        <View
+          style={{
+            flex: 1,
+            backgroundColor: "rgba(0,0,0,0.6)",
+            justifyContent: "center",
+            padding: 16,
+          }}
+        >
+          <View style={{ backgroundColor: "#111", borderRadius: 16, padding: 16 }}>
+            <RNText style={{ color: "white", fontSize: 16, fontWeight: "700" }}>Jump to image</RNText>
+            <RNText style={{ color: "rgba(255,255,255,0.75)", marginTop: 6 }}>
+              Enter an image number (1 = first)
+            </RNText>
+
+            <TextInput
+              value={jumpText}
+              onChangeText={setJumpText}
+              placeholder="e.g. 25"
+              placeholderTextColor="rgba(255,255,255,0.35)"
+              keyboardType="number-pad"
+              style={{
+                marginTop: 12,
+                backgroundColor: "rgba(255,255,255,0.08)",
+                color: "white",
+                paddingHorizontal: 12,
+                paddingVertical: 10,
+                borderRadius: 12,
+              }}
+            />
+
+            <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 10, marginTop: 14 }}>
+              <Pressable
+                onPress={() => setJumpOpen(false)}
+                style={{
+                  paddingHorizontal: 12,
+                  paddingVertical: 10,
+                  borderRadius: 12,
+                  backgroundColor: "rgba(255,255,255,0.08)",
+                }}
+              >
+                <RNText style={{ color: "white", fontWeight: "700" }}>Cancel</RNText>
+              </Pressable>
+
+              <Pressable
+                onPress={jumpToNth}
+                style={{ paddingHorizontal: 12, paddingVertical: 10, borderRadius: 12, backgroundColor: "#2f6fed" }}
+              >
+                <RNText style={{ color: "white", fontWeight: "700" }}>Continue</RNText>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       {/* Bottom hint */}
       <View style={{ position: "absolute", bottom: 18, left: 0, right: 0, alignItems: "center" }}>
