@@ -7,6 +7,11 @@ apply plugin: "com.facebook.react"
  * By default you don't need to apply any configuration, just uncomment the lines you need.
  */
 react {
+    // def hermescBin = org.gradle.internal.os.OperatingSystem.current().isWindows() ? "hermesc.exe" : "hermesc"
+    // hermesCommand = "node_modules/hermes-compiler/hermesc/%OS-BIN%/" + hermescBin
+    if (org.gradle.internal.os.OperatingSystem.current().isWindows()) {
+        hermesCommand = "$rootDir/hermesc.cmd"
+    }
     /* Folders */
     //   The root of your project, i.e. where "package.json" lives. Default is '../..'
     // root = file("../../")
